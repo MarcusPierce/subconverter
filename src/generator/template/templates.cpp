@@ -1,24 +1,25 @@
 #include <string>
 #include <map>
 #include <sstream>
+#include <filesystem>
 #include <inja.hpp>
 #include <nlohmann/json.hpp>
 
-#include "../../utils/yamlcpp_extra.h"
-#include "../../utils/urlencode.h"
-#include "../../utils/regexp.h"
-#include "../../handler/interfaces.h"
-#include "../../utils/logger.h"
-#include "../../utils/network.h"
+#include "handler/interfaces.h"
+#include "handler/settings.h"
+#include "handler/webget.h"
+#include "utils/logger.h"
+#include "utils/network.h"
+#include "utils/regexp.h"
+#include "utils/urlencode.h"
+#include "utils/yamlcpp_extra.h"
 #include "templates.h"
-
-extern std::string gManagedConfigPrefix;
 
 namespace inja
 {
-    void convert_dot_to_json_pointer(nonstd::string_view dot, std::string& out)
+    void convert_dot_to_json_pointer(std::string_view dot, std::string& out)
     {
-        out = JsonNode::convert_dot_to_json_ptr(dot);
+        out = DataNode::convert_dot_to_ptr(dot);
     }
 }
 
@@ -36,8 +37,58 @@ static inline void parse_json_pointer(nlohmann::json &json, const std::string &p
     }
 }
 
+/*
+std::string parseHostname(inja::Arguments &args)
+{
+    std::string data = args.at(0)->get<std::string>(), hostname;
+    const std::string matcher = R"(^(?i:hostname\s*?=\s*?)(.*?)\s$)";
+    string_array urls = split(data, ",");
+    if(!urls.size())
+        return std::string();
+
+    std::string input_content, output_content, proxy = parseProxy(global.proxyConfig);
+    for(std::string &x : urls)
+    {
+        input_content = webGet(x, proxy, global.cacheConfig);
+        regGetMatch(input_content, matcher, 2, 0, &hostname);
+        if(hostname.size())
+        {
+            output_content += hostname + ",";
+            hostname.clear();
+        }
+    }
+    string_array vArray = split(output_content, ",");
+    std::set<std::string> hostnames;
+    for(std::string &x : vArray)
+        hostnames.emplace(trim(x));
+    output_content = std::accumulate(hostnames.begin(), hostnames.end(), std::string(), [](std::string a, std::string b)
+    {
+        return std::move(a) + "," + std::move(b);
+    });
+    return output_content;
+}*/
+
+#ifndef NO_WEBGET
+std::string template_webGet(inja::Arguments &args)
+{
+    std::string data = args.at(0)->get<std::string>(), proxy = parseProxy(global.proxyConfig);
+    writeLog(0, "Template called fetch with url '" + data + "'.", LOG_LEVEL_INFO);
+    return webGet(data, proxy, global.cacheConfig);
+}
+#endif // NO_WEBGET
+
 int render_template(const std::string &content, const template_args &vars, std::string &output, const std::string &include_scope)
 {
+    std::string absolute_scope;
+    try
+    {
+        if(!include_scope.empty())
+            absolute_scope = std::filesystem::canonical(include_scope).string();
+    }
+    catch(std::exception &e)
+    {
+        writeLog(0, e.what(), LOG_LEVEL_ERROR);
+    }
     nlohmann::json data;
     for(auto &x : vars.global_vars)
         parse_json_pointer(data["global"], x.first, x.second);
@@ -45,7 +96,7 @@ int render_template(const std::string &content, const template_args &vars, std::
     for(auto &x : vars.request_params)
     {
         all_args += x.first;
-        if(x.second.size())
+        if(!x.second.empty())
         {
             parse_json_pointer(data["request"], x.first, x.second);
             all_args += "=" + x.second;
@@ -57,71 +108,60 @@ int render_template(const std::string &content, const template_args &vars, std::
     for(auto &x : vars.local_vars)
         parse_json_pointer(data["local"], x.first, x.second);
 
-    inja::LexerConfig m_lexer_config;
-    inja::FunctionStorage m_callbacks;
-    inja::TemplateStorage m_included_templates;
-    inja::ParserConfig m_parser_config;
-    inja::RenderConfig m_render_config;
+    inja::Environment env;
 
-    m_lexer_config.trim_blocks = true;
-    m_lexer_config.lstrip_blocks = true;
-    m_lexer_config.line_statement = "#~#";
-    m_callbacks.add_callback("UrlEncode", 1, [](inja::Arguments &args)
+    env.set_trim_blocks(true);
+    env.set_lstrip_blocks(true);
+    env.set_line_statement("#~#");
+    env.add_callback("UrlEncode", 1, [](inja::Arguments &args)
     {
         std::string data = args.at(0)->get<std::string>();
         return urlEncode(data);
     });
-    m_callbacks.add_callback("UrlDecode", 1, [](inja::Arguments &args)
+    env.add_callback("UrlDecode", 1, [](inja::Arguments &args)
     {
         std::string data = args.at(0)->get<std::string>();
         return urlDecode(data);
     });
-    m_callbacks.add_callback("trim_of", 2, [](inja::Arguments &args)
+    env.add_callback("trim_of", 2, [](inja::Arguments &args)
     {
         std::string data = args.at(0)->get<std::string>(), target = args.at(1)->get<std::string>();
         if(target.empty())
             return data;
         return trimOf(data, target[0]);
     });
-    m_callbacks.add_callback("trim", 1, [](inja::Arguments &args)
+    env.add_callback("trim", 1, [](inja::Arguments &args)
     {
         std::string data = args.at(0)->get<std::string>();
         return trim(data);
     });
-    m_callbacks.add_callback("find", 2, [](inja::Arguments &args)
+    env.add_callback("find", 2, [](inja::Arguments &args)
     {
         std::string src = args.at(0)->get<std::string>(), target = args.at(1)->get<std::string>();
         return regFind(src, target);
     });
-    m_callbacks.add_callback("replace", 3, [](inja::Arguments &args)
+    env.add_callback("replace", 3, [](inja::Arguments &args)
     {
         std::string src = args.at(0)->get<std::string>(), target = args.at(1)->get<std::string>(), rep = args.at(2)->get<std::string>();
         if(target.empty() || src.empty())
             return src;
         return regReplace(src, target, rep);
     });
-    m_callbacks.add_callback("set", 2, [&data](inja::Arguments &args)
+    env.add_callback("set", 2, [&data](inja::Arguments &args)
     {
         std::string key = args.at(0)->get<std::string>(), value = args.at(1)->get<std::string>();
         parse_json_pointer(data, key, value);
-        return std::string();
+        return "";
     });
-    m_callbacks.add_callback("split", 3, [&data](inja::Arguments &args)
+    env.add_callback("split", 3, [&data](inja::Arguments &args)
     {
         std::string content = args.at(0)->get<std::string>(), delim = args.at(1)->get<std::string>(), dest = args.at(2)->get<std::string>();
         string_array vArray = split(content, delim);
         for(size_t index = 0; index < vArray.size(); index++)
             parse_json_pointer(data, dest + "." + std::to_string(index), vArray[index]);
-        return std::string();
+        return "";
     });
-    m_callbacks.add_callback("join", -1, [](inja::Arguments &args)
-    {
-        std::string result;
-        for(auto iter = args.begin(); iter != args.end(); iter++)
-            result += (*iter)->get<std::string>();
-        return result;
-    });
-    m_callbacks.add_callback("append", 2, [&data](inja::Arguments &args)
+    env.add_callback("append", 2, [&data](inja::Arguments &args)
     {
         std::string path = args.at(0)->get<std::string>(), value = args.at(1)->get<std::string>(), pointer, output_content;
         inja::convert_dot_to_json_pointer(path, pointer);
@@ -135,35 +175,35 @@ int render_template(const std::string &content, const template_args &vars, std::
         }
         output_content.append(value);
         data[nlohmann::json::json_pointer(pointer)] = output_content;
-        return std::string();
+        return "";
     });
-    m_callbacks.add_callback("getLink", 1, [](inja::Arguments &args)
+    env.add_callback("getLink", 1, [](inja::Arguments &args)
     {
-        return gManagedConfigPrefix + args.at(0)->get<std::string>();
+        return global.managedConfigPrefix + args.at(0)->get<std::string>();
     });
-    m_callbacks.add_callback("startsWith", 2, [](inja::Arguments &args)
+    env.add_callback("startsWith", 2, [](inja::Arguments &args)
     {
         return startsWith(args.at(0)->get<std::string>(), args.at(1)->get<std::string>());
     });
-    m_callbacks.add_callback("endsWith", 2, [](inja::Arguments &args)
+    env.add_callback("endsWith", 2, [](inja::Arguments &args)
     {
         return endsWith(args.at(0)->get<std::string>(), args.at(1)->get<std::string>());
     });
-    m_callbacks.add_callback("or", -1, [](inja::Arguments &args)
+    env.add_callback("or", -1, [](inja::Arguments &args)
     {
         for(auto iter = args.begin(); iter != args.end(); iter++)
             if((*iter)->get<int>())
                 return true;
         return false;
     });
-    m_callbacks.add_callback("and", -1, [](inja::Arguments &args)
+    env.add_callback("and", -1, [](inja::Arguments &args)
     {
         for(auto iter = args.begin(); iter != args.end(); iter++)
             if(!(*iter)->get<int>())
                 return false;
         return true;
     });
-    m_callbacks.add_callback("bool", 1, [](inja::Arguments &args)
+    env.add_callback("bool", 1, [](inja::Arguments &args)
     {
         std::string value = args.at(0)->get<std::string>();
         std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return std::tolower(c); });
@@ -176,22 +216,36 @@ int render_template(const std::string &content, const template_args &vars, std::
             return 0;
         }
     });
-    m_callbacks.add_callback("string", 1, [](inja::Arguments &args)
+    env.add_callback("string", 1, [](inja::Arguments &args)
     {
         return std::to_string(args.at(0)->get<int>());
     });
-    m_callbacks.add_callback("fetch", 1, template_webGet);
-    m_callbacks.add_callback("parseHostname", 1, parseHostname);
-    m_parser_config.include_scope_limit = true;
-    m_parser_config.include_scope = include_scope;
+#ifndef NO_WEBGET
+    env.add_callback("fetch", 1, template_webGet);
+#endif // NO_WEBGET
+    //env.add_callback("parseHostname", 1, parseHostname);
 
-    inja::Parser parser(m_parser_config, m_lexer_config, m_included_templates, m_callbacks);
-    inja::Renderer renderer(m_render_config, m_included_templates, m_callbacks);
+    env.set_include_callback([&](const std::string &name, const std::string &template_name)
+    {
+        std::string absolute_path;
+        try
+        {
+            absolute_path = std::filesystem::canonical(template_name).string();
+        }
+        catch(std::exception &e)
+        {
+            throw inja::FileError(e.what());
+        }
+        if(!absolute_scope.empty() && !startsWith(absolute_path, absolute_scope))
+            throw inja::FileError("access denied when trying to include '" + template_name + "': out of scope");
+        return env.parse(fileGet(template_name, true));
+    });
+    env.set_search_included_templates_in_files(false);
 
     try
     {
         std::stringstream out;
-        renderer.render_to(out, parser.parse(content), data);
+        env.render_to(out, env.parse(content), data);
         output = out.str();
         return 0;
     }
@@ -241,19 +295,19 @@ const std::string clash_script_keyword_template = R"(  keywords = [{{ rule.keywo
 std::string findFileName(const std::string &path)
 {
     string_size pos = path.rfind('/');
-    if(pos == path.npos)
+    if(pos == std::string::npos)
     {
         pos = path.rfind('\\');
-        if(pos == path.npos)
+        if(pos == std::string::npos)
             pos = 0;
     }
     string_size pos2 = path.rfind('.');
-    if(pos2 < pos || pos2 == path.npos)
+    if(pos2 < pos || pos2 == std::string::npos)
         pos2 = path.size();
     return path.substr(pos + 1, pos2 - pos - 1);
 }
 
-int renderClashScript(YAML::Node &base_rule, std::vector<ruleset_content> &ruleset_content_array, std::string remote_path_prefix, bool script, bool overwrite_original_rules, bool clash_classical_ruleset)
+int renderClashScript(YAML::Node &base_rule, std::vector<RulesetContent> &ruleset_content_array, const std::string &remote_path_prefix, bool script, bool overwrite_original_rules, bool clash_classical_ruleset)
 {
     nlohmann::json data;
     std::string match_group, geoips, retrieved_rules;
@@ -269,7 +323,7 @@ int renderClashScript(YAML::Node &base_rule, std::vector<ruleset_content> &rules
     if(!overwrite_original_rules && base_rule["rules"].IsDefined())
         rules = safe_as<string_array>(base_rule["rules"]);
 
-    for(ruleset_content &x : ruleset_content_array)
+    for(RulesetContent &x : ruleset_content_array)
     {
         rule_group = x.rule_group;
         rule_path = x.rule_path;
@@ -324,10 +378,10 @@ int renderClashScript(YAML::Node &base_rule, std::vector<ruleset_content> &rules
                 }
                 if(!script)
                     rules.emplace_back("RULE-SET," + rule_name + "," + rule_group);
-                groups.emplace_back(std::move(rule_name));
+                groups.emplace_back(rule_name);
                 continue;
             }
-            if(remote_path_prefix.size())
+            if(!remote_path_prefix.empty())
             {
                 if(fileExist(rule_path, true) || isLink(rule_path))
                 {
@@ -344,7 +398,7 @@ int renderClashScript(YAML::Node &base_rule, std::vector<ruleset_content> &rules
                     {
                         if(!script)
                             rules.emplace_back("RULE-SET," + rule_name + "," + rule_group);
-                        groups.emplace_back(std::move(rule_name));
+                        groups.emplace_back(rule_name);
                         continue;
                     }
                 }
@@ -365,6 +419,7 @@ int renderClashScript(YAML::Node &base_rule, std::vector<ruleset_content> &rules
             strStrm.clear();
             strStrm<<retrieved_rules;
             std::string::size_type lineSize;
+            bool has_no_resolve = false;
             while(getline(strStrm, strLine, delimiter))
             {
                 lineSize = strLine.size();
@@ -387,23 +442,42 @@ int renderClashScript(YAML::Node &base_rule, std::vector<ruleset_content> &rules
                     }
                     else
                     {
-                        strLine += "," + rule_group;
-                        if(count_least(strLine, ',', 3))
-                            strLine = regReplace(strLine, "^(.*?,.*?)(,.*)(,.*)$", "$1$3$2");
-                        rules.emplace_back(std::move(strLine));
+                        vArray = split(strLine, ",");
+                        if(vArray.size() < 2)
+                        {
+                            strLine = vArray[0] + "," + rule_group;
+                        }
+                        else
+                        {
+                            strLine = vArray[0] + "," + vArray[1] + "," + rule_group;
+                            if(vArray.size() > 2)
+                                strLine += "," + vArray[2];
+                        }
+                        rules.emplace_back(strLine);
                     }
                 }
                 else if(!has_domain[rule_name] && (startsWith(strLine, "DOMAIN,") || startsWith(strLine, "DOMAIN-SUFFIX,")))
                     has_domain[rule_name] = true;
                 else if(!has_ipcidr[rule_name] && (startsWith(strLine, "IP-CIDR,") || startsWith(strLine, "IP-CIDR6,")))
+                {
                     has_ipcidr[rule_name] = true;
+                    if(strLine.find(",no-resolve") != std::string::npos)
+                        has_no_resolve = true;
+                }
             }
             if(has_domain[rule_name] && !script)
                 rules.emplace_back("RULE-SET," + rule_name + "_domain," + rule_group);
             if(has_ipcidr[rule_name] && !script)
-                rules.emplace_back("RULE-SET," + rule_name + "_ipcidr," + rule_group);
+            {
+                if(has_no_resolve)
+                    rules.emplace_back("RULE-SET," + rule_name + "_ipcidr," + rule_group + ",no-resolve");
+                else
+                    rules.emplace_back("RULE-SET," + rule_name + "_ipcidr," + rule_group);
+            }
+            if(!has_domain[rule_name] && !has_ipcidr[rule_name] && !script)
+                rules.emplace_back("RULE-SET," + rule_name + "," + rule_group);
             if(std::find(groups.begin(), groups.end(), rule_name) == groups.end())
-                groups.emplace_back(std::move(rule_name));
+                groups.emplace_back(rule_name);
         }
     }
     for(std::string &x : groups)
@@ -470,7 +544,7 @@ int renderClashScript(YAML::Node &base_rule, std::vector<ruleset_content> &rules
     }
     if(script)
     {
-        if(geoips.size())
+        if(!geoips.empty())
             parse_json_pointer(data, "geoips", geoips.erase(geoips.size() - 1));
 
         parse_json_pointer(data, "match_group", match_group);

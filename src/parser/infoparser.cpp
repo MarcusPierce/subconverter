@@ -1,17 +1,18 @@
 #include <string>
 #include <vector>
 #include <cmath>
-#include <time.h>
+#include <ctime>
 
-#include "../parser/config/proxy.h"
-#include "../utils/base64/base64.h"
-#include "../utils/rapidjson_extra.h"
-#include "../utils/regexp.h"
-#include "../utils/string.h"
+#include "config/regmatch.h"
+#include "parser/config/proxy.h"
+#include "utils/base64/base64.h"
+#include "utils/rapidjson_extra.h"
+#include "utils/regexp.h"
+#include "utils/string.h"
 
 unsigned long long streamToInt(const std::string &stream)
 {
-    if(!stream.size())
+    if(stream.empty())
         return 0;
     double streamval = 1.0;
     std::vector<std::string> units = {"B", "KB", "MB", "GB", "TB", "PB", "EB"};
@@ -73,7 +74,7 @@ bool getSubInfoFromHeader(const std::string &header, std::string &result)
     if(regFind(header, pattern))
     {
         regGetMatch(header, pattern, 2, 0, &retStr);
-        if(retStr.size())
+        if(!retStr.empty())
         {
             result = retStr;
             return true;
@@ -82,26 +83,20 @@ bool getSubInfoFromHeader(const std::string &header, std::string &result)
     return false;
 }
 
-bool getSubInfoFromNodes(const std::vector<Proxy> &nodes, const string_array &stream_rules, const string_array &time_rules, std::string &result)
+bool getSubInfoFromNodes(const std::vector<Proxy> &nodes, const RegexMatchConfigs &stream_rules, const RegexMatchConfigs &time_rules, std::string &result)
 {
-    std::string remarks, pattern, target, stream_info, time_info, retStr;
-    string_size spos;
+    std::string remarks, stream_info, time_info, retStr;
 
     for(const Proxy &x : nodes)
     {
         remarks = x.Remark;
-        if(!stream_info.size())
+        if(stream_info.empty())
         {
-            for(const std::string &y : stream_rules)
+            for(const RegexMatchConfig &y : stream_rules)
             {
-                spos = y.rfind("|");
-                if(spos == y.npos)
-                    continue;
-                pattern = y.substr(0, spos);
-                target = y.substr(spos + 1);
-                if(regMatch(remarks, pattern))
+                if(regMatch(remarks, y.Match))
                 {
-                    retStr = regReplace(remarks, pattern, target);
+                    retStr = regReplace(remarks, y.Match, y.Replace);
                     if(retStr != remarks)
                     {
                         stream_info = retStr;
@@ -114,18 +109,13 @@ bool getSubInfoFromNodes(const std::vector<Proxy> &nodes, const string_array &st
         }
 
         remarks = x.Remark;
-        if(!time_info.size())
+        if(time_info.empty())
         {
-            for(const std::string &y : time_rules)
+            for(const RegexMatchConfig &y : time_rules)
             {
-                spos = y.rfind("|");
-                if(spos == y.npos)
-                    continue;
-                pattern = y.substr(0, spos);
-                target = y.substr(spos + 1);
-                if(regMatch(remarks, pattern))
+                if(regMatch(remarks, y.Match))
                 {
-                    retStr = regReplace(remarks, pattern, target);
+                    retStr = regReplace(remarks, y.Match, y.Replace);
                     if(retStr != remarks)
                     {
                         time_info = retStr;
@@ -137,11 +127,11 @@ bool getSubInfoFromNodes(const std::vector<Proxy> &nodes, const string_array &st
             }
         }
 
-        if(stream_info.size() && time_info.size())
+        if(!stream_info.empty() && !time_info.empty())
             break;
     }
 
-    if(!stream_info.size() && !time_info.size())
+    if(stream_info.empty() && time_info.empty())
         return false;
 
     //calculate how much stream left
@@ -149,28 +139,30 @@ bool getSubInfoFromNodes(const std::vector<Proxy> &nodes, const string_array &st
     std::string total_str = getUrlArg(stream_info, "total"), left_str = getUrlArg(stream_info, "left"), used_str = getUrlArg(stream_info, "used");
     if(strFind(total_str, "%"))
     {
-        if(used_str.size())
+        if(!used_str.empty())
         {
             used = streamToInt(used_str);
             total = used / (1 - percentToDouble(total_str));
         }
-        else if(left_str.size())
+        else if(!left_str.empty())
         {
             left = streamToInt(left_str);
             total = left / percentToDouble(total_str);
+            if (left > total) left = 0;
             used = total - left;
         }
     }
     else
     {
         total = streamToInt(total_str);
-        if(used_str.size())
+        if(!used_str.empty())
         {
             used = streamToInt(used_str);
         }
-        else if(left_str.size())
+        else if(!left_str.empty())
         {
             left = streamToInt(left_str);
+            if (left > total) left = 0;
             used = total - left;
         }
     }
@@ -193,7 +185,7 @@ bool getSubInfoFromSSD(const std::string &sub, std::string &result)
         return false;
 
     std::string used_str = GetMember(json, "traffic_used"), total_str = GetMember(json, "traffic_total"), expire_str = GetMember(json, "expiry");
-    if(!used_str.size() || !total_str.size())
+    if(used_str.empty() || total_str.empty())
         return false;
     unsigned long long used = stod(used_str) * std::pow(1024, 3), total = stod(total_str) * std::pow(1024, 3), expire;
     result = "upload=0; download=" + std::to_string(used) + "; total=" + std::to_string(total) + ";";

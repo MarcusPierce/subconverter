@@ -5,19 +5,19 @@
 #include <map>
 #include <inja.hpp>
 
-#include "../generator/config/subexport.h"
-#include "../server/webserver.h"
+#include "config/ruleset.h"
+#include "generator/config/subexport.h"
+#include "server/webserver.h"
 
-void refreshRulesets(string_array &ruleset_list, std::vector<ruleset_content> &rca);
+std::string parseProxy(const std::string &source);
+
+void refreshRulesets(RulesetConfigs &ruleset_list, std::vector<RulesetContent> &rca);
 void readConf();
 int simpleGenerator();
 std::string convertRuleset(const std::string &content, int type);
 
-std::string getConvertedRuleset(RESPONSE_CALLBACK_ARGS);
-std::string getScript(RESPONSE_CALLBACK_ARGS);
 std::string getProfile(RESPONSE_CALLBACK_ARGS);
 std::string getRuleset(RESPONSE_CALLBACK_ARGS);
-std::string getRewriteRemote(RESPONSE_CALLBACK_ARGS);
 
 std::string subconverter(RESPONSE_CALLBACK_ARGS);
 std::string simpleToClashR(RESPONSE_CALLBACK_ARGS);

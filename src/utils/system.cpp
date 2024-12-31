@@ -1,8 +1,9 @@
 #include <string>
 #include <vector>
-#include <stdlib.h>
+#include <memory>
 #include <chrono>
 #include <thread>
+#include <stdlib.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -49,7 +50,7 @@ std::string getSystemProxy()
     if(ret != ERROR_SUCCESS)
     {
         //std::cout << "open failed: " << ret << std::endl;
-        return std::string();
+        return "";
     }
 
     DWORD values_count, max_value_name_len, max_value_len;
@@ -58,7 +59,7 @@ std::string getSystemProxy()
     if(ret != ERROR_SUCCESS)
     {
         //std::cout << "query failed" << std::endl;
-        return std::string();
+        return "";
     }
 
     std::vector<std::tuple<std::shared_ptr<char>, DWORD, std::shared_ptr<BYTE>>> values;
@@ -102,7 +103,7 @@ std::string getSystemProxy()
     }
     */
     //return 0;
-    return std::string();
+    return "";
 #else
     string_array proxy_env = {"all_proxy", "ALL_PROXY", "http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"};
     for(std::string &x : proxy_env)
@@ -111,6 +112,6 @@ std::string getSystemProxy()
         if(proxy != NULL)
             return std::string(proxy);
     }
-    return std::string();
+    return "";
 #endif // _WIN32
 }

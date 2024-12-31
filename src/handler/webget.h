@@ -4,8 +4,8 @@
 #include <string>
 #include <map>
 
-#include "../utils/map_extra.h"
-#include "../utils/string.h"
+#include "utils/map_extra.h"
+#include "utils/string.h"
 
 enum http_method
 {
@@ -20,10 +20,11 @@ struct FetchArgument
     const http_method method;
     const std::string url;
     const std::string proxy;
-    const std::string post_data;
+    const std::string *post_data = nullptr;
     const string_icase_map *request_headers = nullptr;
     std::string *cookies = nullptr;
     const unsigned int cache_ttl = 0;
+    const bool keep_resp_on_fail = false;
 };
 
 struct FetchResult
